@@ -6,6 +6,8 @@ import (
 	"gonum.org/v1/gonum/floats"
 )
 
+// Good review article: http://ruder.io/optimizing-gradient-descent/index.html#nesterovacceleratedgradient
+
 // resize takes x and returns a slice of length dim. It returns a resliced x
 // if cap(x) >= dim, and a new slice otherwise.
 // TODO(btracey): This zeros x before it returns it, but the version in optimize
@@ -26,8 +28,143 @@ func resize(x []float64, dim int) []float64 {
 //  θ += step
 // where θ are the parameters being optimized.
 type Stepper interface {
-	Init(grad []float64)
+	Init(dim int)
 	Step(step, grad []float64)
+}
+
+var (
+	_ Stepper = &Adadelta{}
+	_ Stepper = &Adagrad{}
+	_ Stepper = &Adam{}
+	_ Stepper = &Anneal{}
+	_ Stepper = &Momentum{}
+	_ Stepper = &Nesterov{}
+	_ Stepper = &RMSProp{}
+)
+
+// Adadelta is a stepper with a per-parameter step size that is adjusted
+// automatically based on past gradient evaluations. Adadelta updates as
+//  step = - \sqrt(E[s_{t-1}] + ϵ) / \sqrt(E[g_t] + ϵ) ⊙ df/dx
+// where
+//  E[g_t] = (1-γ) df/dx ⊙ df/dx + γ * g_{t-1}
+//  E[s_t] = (1-γ) Δθ_t ⊙ Δθ_t + γ * s_{t-1}
+type Adadelta struct {
+	// Smooth sets the value of the smoothing parameter ϵ. If Smooth is 0, a
+	// default value of 1e-8 is used.
+	Smooth float64
+	// Momen sets the momentum term γ. If Momen is 0, a default value of 0.9 is used.
+	Momen float64
+
+	s []float64
+	g []float64
+}
+
+func (a *Adadelta) Init(dim int) {
+	if a.Smooth == 0 {
+		a.Smooth = 1e-8
+	}
+	if a.Momen == 0 {
+		a.Momen = 0.9
+	}
+	a.s = resize(a.s, dim)
+	a.g = resize(a.g, dim)
+}
+
+func (a *Adadelta) Step(step, grad []float64) {
+	for i, v := range grad {
+		a.g[i] = (1-a.Momen)*v*v + a.Momen*a.g[i]
+		step[i] = -math.Sqrt(a.s[i]+a.Smooth) / math.Sqrt(a.g[i]+a.Smooth) * v
+		a.s[i] = (1-a.Momen)*step[i]*step[i] + a.Momen*a.s[i]
+	}
+}
+
+// Adagrad is a stepper with a per-parameter step size that is adjusted
+// automatically based on past gradient evaluations. Adagrad updates as
+//  G_{t,i} += df/dx ⊙ df/dx
+//  step = -η/\sqrt(G_{t,i} + ϵ) ⊙ df/dx
+// where ⊙ is the element-wise product.
+type Adagrad struct {
+	// Size sets the value of the parameter η. If Size is 0, a default value of
+	// 0.01 is used.
+	Size float64
+	// Smooth sets the value of the smoothing parameter ϵ. If Smooth is 0, a
+	// default value of 1e-8 is used.
+	Smooth float64
+
+	g []float64
+}
+
+func (a *Adagrad) Init(dim int) {
+	if a.Size == 0 {
+		a.Size = 0.01
+	}
+	if a.Smooth == 0 {
+		a.Smooth = 1e-8
+	}
+	a.g = resize(a.g, dim)
+}
+
+func (a *Adagrad) Step(step, grad []float64) {
+	copy(step, grad)
+	for i, v := range grad {
+		a.g[i] += v * v
+		step[i] *= -a.Size / math.Sqrt(a.g[i]+a.Smooth)
+	}
+}
+
+// Adam is a stepper with a per-parameter step size that uses both a decaying
+// average of past gradients and a momentum term.
+//  m_t = γ_1 * m_{t-1} + (1-γ_1) * g_t
+//  m̂_t = m_t/(1-γ_1^t)
+//  ν_t = γ_2 * ν_{t-1} + (1-γ_2) * g_t ⊙ g_t
+//  ν̂_t = ν_t/(1-γ_2^t)
+//  step = - η/(sqrt(ν̂_t)+ϵ) ⊙ m̂_t
+type Adam struct {
+	// Size sets the value of the parameter η. If Size is 0, a default value of
+	// 0.001 is used.
+	Size float64
+	// MeanMomen sets the momentum term for the mean gradient γ_1. If MeanMomen
+	// is 0, a default value of 0.9 is used.
+	MeanMomen float64
+	// VarMomen sets the momentum term for the variance of the gradient γ_2.
+	// If VarMomen is 0, a default value of 0.999 is used.
+	VarMomen float64
+	// Smooth sets the value of the smoothing parameter ϵ. If Smooth is 0, a
+	// default value of 1e-8 is used.
+	Smooth float64
+
+	time float64
+	m    []float64
+	nu   []float64
+}
+
+func (a *Adam) Init(dim int) {
+	if a.Size == 0 {
+		a.Size = 0.001
+	}
+	if a.MeanMomen == 0 {
+		a.MeanMomen = 0.9
+	}
+	if a.VarMomen == 0 {
+		a.VarMomen = 0.999
+	}
+	if a.Smooth == 0 {
+		a.Smooth = 1e-8
+	}
+	a.time = 0
+	a.m = resize(a.m, dim)
+	a.nu = resize(a.nu, dim)
+}
+
+func (a *Adam) Step(step, grad []float64) {
+	a.time++
+	for i, v := range grad {
+		a.m[i] = a.MeanMomen*a.m[i] + (1-a.MeanMomen)*v
+		a.nu[i] = a.VarMomen*a.nu[i] + (1-a.VarMomen)*v*v
+		mhat := math.Pow(a.m[i], a.time)
+		nuhat := math.Pow(a.nu[i], a.time)
+		step[i] = -a.Size / (math.Sqrt(nuhat) + a.Smooth) * mhat
+	}
 }
 
 // Anneal is a stepper that has a step size which is annealed over time.
@@ -46,7 +183,7 @@ type Anneal struct {
 	curr float64
 }
 
-func (a *Anneal) Init(grad []float64) {
+func (a *Anneal) Init(dim int) {
 	a.curr = a.Size
 	if a.curr == 0 {
 		a.curr = 1
@@ -81,7 +218,7 @@ type Momentum struct {
 	nu   []float64
 }
 
-func (m *Momentum) Init(grad []float64) {
+func (m *Momentum) Init(dim int) {
 	m.curr = m.Size
 	if m.curr == 0 {
 		m.curr = 1
@@ -92,7 +229,7 @@ func (m *Momentum) Init(grad []float64) {
 	if m.Momen == 0 {
 		m.Momen = 0.9
 	}
-	m.nu = resize(m.nu, len(grad))
+	m.nu = resize(m.nu, dim)
 }
 
 func (m *Momentum) Step(step, grad []float64) {
@@ -109,127 +246,85 @@ func (m *Momentum) Step(step, grad []float64) {
 	floats.Scale(-1, step)
 }
 
-// Adagrad is a stepper with a per-parameter step size that is adjusted
-// automatically based on past gradient evaluations. Adagrad updates as
-//  G_{t,i} += df/dx ⊙ df/dx
-//  step = -η/\sqrt(G_{t,i} + ϵ) ⊙ df/dx
-// where ⊙ is the element-wise product.
-type Adagrad struct {
-	// Size sets the value of the parameter η. If Size is 0, a default value of
-	// 0.01 is used.
-	Size float64
-	// Smooth sets the value of the smoothing parameter ϵ. If Smooth is 0, a
-	// default value of 1e-8 is used.
-	Smooth float64
+// Nesterov implements Nesterov's Accelerated Gradient Descent.
+// Nesterov sets
+//  x_k = step_{k-1} - β df/dx
+//  step_k = x_k + (k-1)/(k+2) (x_k - x_{k-1})
+// See
+//  https://arxiv.org/pdf/1503.01243.pdf eq. 1
+type Nesterov struct {
+	Beta float64 // If Beta = 0 a default value of 0.1 is used.
 
-	g []float64
+	k        float64
+	lastStep []float64
+	lastX    []float64
+	thisX    []float64
 }
 
-func (a *Adagrad) Init(grad []float64) {
-	if a.Size == 0 {
-		a.Size = 0.01
+func (n *Nesterov) Init(dim int) {
+	// Reference:
+	//  https://arxiv.org/pdf/1503.01243.pdf
+	//  equation 1
+	//
+	// The original equations are
+	//  x_k = y_{k-1} - β df/dx
+	//  y_k = x_k + (k-1)/(k+2) (x_k - x_{k-1})
+	// The equations given above in the comment are just shifting the equations
+	// by y_0.
+	if n.Beta == 0 {
+		n.Beta = 0.1
 	}
-	if a.Smooth == 0 {
-		a.Smooth = 1e-8
-	}
-	a.g = resize(a.g, len(grad))
+	n.k = 0
+	n.lastStep = resize(n.lastStep, dim)
+	n.lastX = resize(n.lastX, dim)
+	n.thisX = resize(n.thisX, dim)
 }
 
-func (a *Adagrad) Step(step, grad []float64) {
-	copy(step, grad)
-	for i, v := range grad {
-		a.g[i] += v * v
-		step[i] *= -a.Size / math.Sqrt(a.g[i]+a.Smooth)
-	}
+func (n *Nesterov) Step(step, grad []float64) {
+	n.k++
+	floats.AddScaledTo(n.thisX, n.lastStep, -n.Beta, grad)
+	kfact := (n.k - 1) / (n.k + 2)
+	copy(step, n.thisX)
+	floats.Scale(kfact+1, step)
+	floats.AddScaled(step, -kfact, n.lastX)
+	copy(n.lastStep, step)
+	copy(n.lastX, n.thisX)
 }
 
-// Adadelta is a stepper with a per-parameter step size that is adjusted
-// automatically based on past gradient evaluations. Adadelta updates as
-//  step = - \sqrt(E[s_{t-1}] + ϵ) / \sqrt(E[g_t] + ϵ) ⊙ df/dx
-// where
+// RMSProb implements the RMSProp stepper algorithm.
+//  step_{t+1} = step_t - (η / \sqrt(E[g_t] + ϵ)) ⊙ df/dx
 //  E[g_t] = (1-γ) df/dx ⊙ df/dx + γ * g_{t-1}
-//  E[s_t] = (1-γ) Δθ_t ⊙ Δθ_t + γ * s_{t-2}
-type Adadelta struct {
+type RMSProp struct {
 	// Smooth sets the value of the smoothing parameter ϵ. If Smooth is 0, a
 	// default value of 1e-8 is used.
 	Smooth float64
 	// Momen sets the momentum term γ. If Momen is 0, a default value of 0.9 is used.
 	Momen float64
+	// Rate sets the learning rate η. If Rate is 0, a default value of 0.001 is used.
+	Rate float64
 
 	s []float64
 	g []float64
 }
 
-func (a *Adadelta) Init(grad []float64) {
-	if a.Smooth == 0 {
-		a.Smooth = 1e-8
+func (r *RMSProp) Init(dim int) {
+	if r.Smooth == 0 {
+		r.Smooth = 1e-8
 	}
-	if a.Momen == 0 {
-		a.Momen = 0.9
+	if r.Momen == 0 {
+		r.Momen = 0.9
 	}
-	a.s = resize(a.s, len(grad))
-	a.g = resize(a.g, len(grad))
+	if r.Rate == 0 {
+		r.Rate = 0.001
+	}
+	r.s = resize(r.s, dim)
+	r.g = resize(r.g, dim)
 }
 
-func (a *Adadelta) Step(step, grad []float64) {
+func (r *RMSProp) Step(step, grad []float64) {
 	for i, v := range grad {
-		a.g[i] = (1-a.Momen)*v*v + a.Momen*a.g[i]
-		step[i] = -math.Sqrt(a.s[i]+a.Smooth) / math.Sqrt(a.g[i]+a.Smooth) * v
-		a.s[i] = (1-a.Momen)*step[i]*step[i] + a.Momen*a.s[i]
+		r.g[i] = (1-r.Momen)*v*v + r.Momen*r.g[i]
+		r.s[i] -= r.Rate / (math.Sqrt(r.g[i] + r.Smooth)) * v
 	}
-}
-
-// Adam is a stepper with a per-parameter step size that uses both a decaying
-// average of past gradients and a momentum term.
-//  m_t = γ_1 * m_{t-1} + (1-γ_1) * g_t
-//  m̂_t = m_t/(1-γ_1^t)
-//  ν_t = γ_2 * ν_{t-1} + (1-γ_2) * g_t ⊙ g_t
-//  ν̂_t = ν_t/(1-γ_2^t)
-//  step = - η/(sqrt(ν̂_t)+ϵ) ⊙ m̂_t
-type Adam struct {
-	// Size sets the value of the parameter η. If Size is 0, a default value of
-	// 0.001 is used.
-	Size float64
-	// MeanMomen sets the momentum term for the mean gradient γ_1. If MeanMomen
-	// is 0, a default value of 0.9 is used.
-	MeanMomen float64
-	// VarMomen sets the momentum term for the variance of the gradient γ_2.
-	// If VarMomen is 0, a default value of 0.999 is used.
-	VarMomen float64
-	// Smooth sets the value of the smoothing parameter ϵ. If Smooth is 0, a
-	// default value of 1e-8 is used.
-	Smooth float64
-
-	time float64
-	m    []float64
-	nu   []float64
-}
-
-func (a *Adam) Init(grad []float64) {
-	if a.Size == 0 {
-		a.Size = 0.001
-	}
-	if a.MeanMomen == 0 {
-		a.MeanMomen = 0.9
-	}
-	if a.VarMomen == 0 {
-		a.VarMomen = 0.999
-	}
-	if a.Smooth == 0 {
-		a.Smooth = 1e-8
-	}
-	a.time = 0
-	a.m = resize(a.m, len(grad))
-	a.nu = resize(a.nu, len(grad))
-}
-
-func (a *Adam) Step(step, grad []float64) {
-	a.time++
-	for i, v := range grad {
-		a.m[i] = a.MeanMomen*a.m[i] + (1-a.MeanMomen)*v
-		a.nu[i] = a.VarMomen*a.nu[i] + (1-a.VarMomen)*v*v
-		mhat := math.Pow(a.m[i], a.time)
-		nuhat := math.Pow(a.nu[i], a.time)
-		step[i] = -a.Size / (math.Sqrt(nuhat) + a.Smooth) * mhat
-	}
+	copy(step, r.s)
 }
