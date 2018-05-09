@@ -8,21 +8,6 @@ import (
 
 // Good review article: http://ruder.io/optimizing-gradient-descent/index.html#nesterovacceleratedgradient
 
-// resize takes x and returns a slice of length dim. It returns a resliced x
-// if cap(x) >= dim, and a new slice otherwise.
-// TODO(btracey): This zeros x before it returns it, but the version in optimize
-// doesn't. These should be rectified.
-func resize(x []float64, dim int) []float64 {
-	if dim > cap(x) {
-		return make([]float64, dim)
-	}
-	x = x[:dim]
-	for i := range x {
-		x[i] = 0
-	}
-	return x
-}
-
 // Stepper is an interface that sets the step size for the next update to
 // the gradient descent. The calling algorithm should update
 //  θ += step
@@ -66,8 +51,8 @@ func (a *Adadelta) Init(dim int) {
 	if a.Momen == 0 {
 		a.Momen = 0.9
 	}
-	a.s = resize(a.s, dim)
-	a.g = resize(a.g, dim)
+	a.s = resizeZero(a.s, dim)
+	a.g = resizeZero(a.g, dim)
 }
 
 func (a *Adadelta) Step(step, grad []float64) {
@@ -101,14 +86,13 @@ func (a *Adagrad) Init(dim int) {
 	if a.Smooth == 0 {
 		a.Smooth = 1e-8
 	}
-	a.g = resize(a.g, dim)
+	a.g = resizeZero(a.g, dim)
 }
 
 func (a *Adagrad) Step(step, grad []float64) {
-	copy(step, grad)
 	for i, v := range grad {
 		a.g[i] += v * v
-		step[i] *= -a.Size / math.Sqrt(a.g[i]+a.Smooth)
+		step[i] *= -a.Size * grad[i] / math.Sqrt(a.g[i]+a.Smooth)
 	}
 }
 
@@ -152,8 +136,8 @@ func (a *Adam) Init(dim int) {
 		a.Smooth = 1e-8
 	}
 	a.time = 0
-	a.m = resize(a.m, dim)
-	a.nu = resize(a.nu, dim)
+	a.m = resizeZero(a.m, dim)
+	a.nu = resizeZero(a.nu, dim)
 }
 
 func (a *Adam) Step(step, grad []float64) {
@@ -229,7 +213,7 @@ func (m *Momentum) Init(dim int) {
 	if m.Momen == 0 {
 		m.Momen = 0.9
 	}
-	m.nu = resize(m.nu, dim)
+	m.nu = resizeZero(m.nu, dim)
 }
 
 func (m *Momentum) Step(step, grad []float64) {
@@ -275,9 +259,9 @@ func (n *Nesterov) Init(dim int) {
 		n.Beta = 0.1
 	}
 	n.k = 0
-	n.lastStep = resize(n.lastStep, dim)
-	n.lastX = resize(n.lastX, dim)
-	n.thisX = resize(n.thisX, dim)
+	n.lastStep = resizeZero(n.lastStep, dim)
+	n.lastX = resizeZero(n.lastX, dim)
+	n.thisX = resizeZero(n.thisX, dim)
 }
 
 func (n *Nesterov) Step(step, grad []float64) {
@@ -317,8 +301,8 @@ func (r *RMSProp) Init(dim int) {
 	if r.Rate == 0 {
 		r.Rate = 0.001
 	}
-	r.s = resize(r.s, dim)
-	r.g = resize(r.g, dim)
+	r.s = resizeZero(r.s, dim)
+	r.g = resizeZero(r.g, dim)
 }
 
 func (r *RMSProp) Step(step, grad []float64) {

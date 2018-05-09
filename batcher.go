@@ -1,31 +1,51 @@
 package sgd
 
-import "math/rand"
+import (
+	"golang.org/x/exp/rand"
+	"gonum.org/v1/gonum/stat/sampleuv"
+)
 
-// Batcher returns the (mini) batch indices. The returned slice
-// will not be modified.
+// Batcher generates minibatches from a dataset of a fixed size.
 type Batcher interface {
+	// Init initializes the Batcher for a dataset of a size specified by nSamples.
+	Init(nSamples int)
+	// Batch returns the indices of the next minibatch to evaluate. The returned
+	// slice will not be modified.
 	Batch() []int
 }
 
+// RandomBatch generates a minibatch of the specified size at random from the
+// total dataset.
 type RandomBatch struct {
-	Size        int  // minibatch size
-	Replacement bool // Can the random indices be generated with replacement.
-	Source      *rand.Rand
+	// Size is the minibatch size.
+	Size int
+	// Replacement sets if the minibatch can have the same sample multiple times
+	// in the minibatch.
+	Replacement bool
+	// Source sets the random number source
+	Source rand.Source
 
-	data []int
+	nData int
+	idxs  []int
 }
 
-func (r *RandomBatch) Batch(max int) []int {
-	if r.data == nil {
-		r.data = make([]int, r.Size)
-	}
-	for i := range r.data {
-		if r.Source == nil {
-			r.data[i] = rand.Intn(max)
-		} else {
-			r.data[i] = r.Source.Intn(max)
+func (r *RandomBatch) Init(nSamples int) {
+	r.nData = nSamples
+	r.idxs = make([]int, r.Size)
+}
+
+func (r *RandomBatch) Batch() []int {
+	if r.Replacement {
+		// Replacement okay.
+		intn := rand.Intn
+		if r.Source != nil {
+			intn = rand.New(r.Source).Intn
 		}
+		for i := range r.idxs {
+			r.idxs[i] = intn(r.nData)
+		}
+	} else {
+		sampleuv.WithoutReplacement(r.idxs, r.nData, r.Source)
 	}
-	return r.data
+	return r.idxs
 }
