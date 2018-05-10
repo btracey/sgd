@@ -6,7 +6,8 @@ import (
 	"gonum.org/v1/gonum/floats"
 )
 
-// Good review article: http://ruder.io/optimizing-gradient-descent/index.html#nesterovacceleratedgradient
+// Good review article: http://ruder.io/optimizing-gradient-descent/
+//  with arXiv https://arxiv.org/abs/1609.04747
 
 // Stepper is an interface that sets the step size for the next update to
 // the gradient descent. The calling algorithm should update
@@ -92,17 +93,18 @@ func (a *Adagrad) Init(dim int) {
 func (a *Adagrad) Step(step, grad []float64) {
 	for i, v := range grad {
 		a.g[i] += v * v
-		step[i] *= -a.Size * grad[i] / math.Sqrt(a.g[i]+a.Smooth)
+		step[i] = -a.Size * grad[i] / math.Sqrt(a.g[i]+a.Smooth)
 	}
 }
 
 // Adam is a stepper with a per-parameter step size that uses both a decaying
 // average of past gradients and a momentum term.
 //  m_t = γ_1 * m_{t-1} + (1-γ_1) * g_t
-//  m̂_t = m_t/(1-γ_1^t)
 //  ν_t = γ_2 * ν_{t-1} + (1-γ_2) * g_t ⊙ g_t
+//  m̂_t = m_t/(1-γ_1^t)
 //  ν̂_t = ν_t/(1-γ_2^t)
 //  step = - η/(sqrt(ν̂_t)+ϵ) ⊙ m̂_t
+// For more information see https://arxiv.org/pdf/1412.6980.pdf .
 type Adam struct {
 	// Size sets the value of the parameter η. If Size is 0, a default value of
 	// 0.001 is used.
@@ -145,70 +147,77 @@ func (a *Adam) Step(step, grad []float64) {
 	for i, v := range grad {
 		a.m[i] = a.MeanMomen*a.m[i] + (1-a.MeanMomen)*v
 		a.nu[i] = a.VarMomen*a.nu[i] + (1-a.VarMomen)*v*v
-		mhat := math.Pow(a.m[i], a.time)
-		nuhat := math.Pow(a.nu[i], a.time)
+		mhat := a.m[i] / (1 - math.Pow(a.MeanMomen, a.time))
+		nuhat := a.nu[i] / (1 - math.Pow(a.VarMomen, a.time))
 		step[i] = -a.Size / (math.Sqrt(nuhat) + a.Smooth) * mhat
 	}
 }
 
 // Anneal is a stepper that has a step size which is annealed over time.
 // Anneal computes the step as
+//  η = a / (b + t)
 //  step = -η * df/dx
-//  η *= α
-// See the struct field documentation for more information.
 type Anneal struct {
-	// Size sets the initial size of the step parameter η. If Init is zero,
+	// Size sets the initial value of the step-size parameter a. If Size is zero,
 	// the default value of 1 is used.
 	Size float64
-	// Rate sets the annealing rate α. If Rate is zero, a default value of 0.99
-	// is used.
-	Rate float64
+	// Offset sets the initial value of the step-size parameter a. If Offset is zero,
+	// the default value of 1 is used.
+	Offset float64
 
-	curr float64
+	time   float64
+	size   float64
+	offset float64
 }
 
 func (a *Anneal) Init(dim int) {
-	a.curr = a.Size
-	if a.curr == 0 {
-		a.curr = 1
+	a.time = 0
+	a.size = a.Size
+	if a.size == 0 {
+		a.size = 1
 	}
-	if a.Rate == 0 {
-		a.Rate = 0.99
+	a.offset = a.Offset
+	if a.offset == 0 {
+		a.offset = 1
 	}
 }
 
 func (a *Anneal) Step(step, grad []float64) {
+	eta := a.size / (a.offset + a.time)
 	copy(step, grad)
-	floats.Scale(-a.curr, step)
-	a.curr *= a.Rate
+	floats.Scale(-eta, step)
+	a.time++
 }
 
 // Momentum is a stepper that implements a momentum-based step direction.
 // Specifically, Momentum sets
-//  ν_t = γ * ν_{t-1} + η * df/dx
-//  step = - ν_t
-//  η *= α
+//  η = a / (b + t)
+//  step_t = γ * step_{t-1} - η * df/dx
 type Momentum struct {
-	// Size sets the initial size of the step parameter η. If Init is zero,
+	// Size sets the initial value of the step-size parameter a. If Size is zero,
 	// the default value of 1 is used.
 	Size float64
-	// Rate sets the annealing rate α. If Rate is zero, a default value of 0.99
-	// is used.
-	Rate float64
+	// Offset sets the initial value of the step-size parameter a. If Offset is zero,
+	// the default value of 1 is used.
+	Offset float64
 	// Momen sets the momentum term γ. If Momen is 0, a default value of 0.9 is used.
 	Momen float64
 
-	curr float64
-	nu   []float64
+	time   float64
+	size   float64
+	offset float64
+	nu     []float64
 }
 
 func (m *Momentum) Init(dim int) {
-	m.curr = m.Size
-	if m.curr == 0 {
-		m.curr = 1
+	m.time = 0
+	m.size = m.Size
+	if m.size == 0 {
+		m.size = 1
 	}
-	if m.Rate == 0 {
-		m.Rate = 0.99
+	m.offset = m.Offset
+	if m.offset == 0 {
+		m.offset = 1
 	}
 	if m.Momen == 0 {
 		m.Momen = 0.9
@@ -217,62 +226,50 @@ func (m *Momentum) Init(dim int) {
 }
 
 func (m *Momentum) Step(step, grad []float64) {
-	// Compute ν_t
-	copy(step, grad)
-	floats.Scale(m.curr, step)
-	floats.AddScaled(step, m.Momen, m.nu)
-
-	// Set for next iteration.
-	copy(m.nu, step)
-	m.curr *= m.Rate
-
-	// return the step.
-	floats.Scale(-1, step)
+	eta := m.size / (m.offset + m.time)
+	for i, g := range grad {
+		m.nu[i] = m.Momen*m.nu[i] - eta*g
+	}
+	copy(step, m.nu)
+	m.time++
 }
 
 // Nesterov implements Nesterov's Accelerated Gradient Descent.
 // Nesterov sets
-//  x_k = step_{k-1} - β df/dx
-//  step_k = x_k + (k-1)/(k+2) (x_k - x_{k-1})
+//  μ = 1 - 3/(t+5)
+//  v_t = μ*v_t - β*df/dx
+//  step_k = -μ*v_{t-1} + (1+μ)*v_t
 // See
 //  https://arxiv.org/pdf/1503.01243.pdf eq. 1
+// OR REALLY SEE
+//  cs231n.github.io/neural-networks-3/#sgd
 type Nesterov struct {
-	Beta float64 // If Beta = 0 a default value of 0.1 is used.
+	// Beta sets the inital step scaling. If Beta is 0, a default value of 0.1 is used.
+	Beta float64
 
-	k        float64
-	lastStep []float64
-	lastX    []float64
-	thisX    []float64
+	vPrev []float64
+	v     []float64
+	t     float64
 }
 
 func (n *Nesterov) Init(dim int) {
-	// Reference:
-	//  https://arxiv.org/pdf/1503.01243.pdf
-	//  equation 1
-	//
-	// The original equations are
-	//  x_k = y_{k-1} - β df/dx
-	//  y_k = x_k + (k-1)/(k+2) (x_k - x_{k-1})
-	// The equations given above in the comment are just shifting the equations
-	// by y_0.
 	if n.Beta == 0 {
-		n.Beta = 0.1
+		n.Beta = 0.01
 	}
-	n.k = 0
-	n.lastStep = resizeZero(n.lastStep, dim)
-	n.lastX = resizeZero(n.lastX, dim)
-	n.thisX = resizeZero(n.thisX, dim)
+	n.vPrev = resizeZero(n.vPrev, dim)
+	n.v = resizeZero(n.v, dim)
+	n.t = 0
 }
 
 func (n *Nesterov) Step(step, grad []float64) {
-	n.k++
-	floats.AddScaledTo(n.thisX, n.lastStep, -n.Beta, grad)
-	kfact := (n.k - 1) / (n.k + 2)
-	copy(step, n.thisX)
-	floats.Scale(kfact+1, step)
-	floats.AddScaled(step, -kfact, n.lastX)
-	copy(n.lastStep, step)
-	copy(n.lastX, n.thisX)
+	n.t++
+	mu := 1 - 3/(n.t+5)
+	rate := n.Beta
+	copy(n.vPrev, n.v)
+	for i, g := range grad {
+		n.v[i] = mu*n.vPrev[i] - rate*g
+		step[i] = -mu*n.vPrev[i] + (1+mu)*n.v[i]
+	}
 }
 
 // RMSProb implements the RMSProp stepper algorithm.
@@ -306,9 +303,9 @@ func (r *RMSProp) Init(dim int) {
 }
 
 func (r *RMSProp) Step(step, grad []float64) {
-	for i, v := range grad {
-		r.g[i] = (1-r.Momen)*v*v + r.Momen*r.g[i]
-		r.s[i] -= r.Rate / (math.Sqrt(r.g[i] + r.Smooth)) * v
+	for i, g := range grad {
+		r.g[i] = r.Momen*r.g[i] + (1-r.Momen)*g*g
+		r.s[i] = -g * r.Rate / (math.Sqrt(r.g[i] + r.Smooth))
 	}
 	copy(step, r.s)
 }

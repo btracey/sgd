@@ -106,21 +106,21 @@ func leastSquaresList() []*LeastSquares {
 	}{
 		// Simple linear fit.
 		{
-			param:  []float64{7, 8},
+			param:  []float64{0.7, 0.8},
 			noise:  1e-2,
 			offset: true,
-			nData:  10,
+			nData:  50,
 		},
 		// Simple linear fit with no offset.
 		{
-			param:  []float64{7, 8},
+			param:  []float64{0.7, 0.8},
 			noise:  1e-2,
 			offset: false,
-			nData:  10,
+			nData:  50,
 		},
 		// Simple linear fit with larger data.
 		{
-			param:  []float64{7, 8},
+			param:  []float64{0.7, 0.8},
 			noise:  1e-2,
 			offset: false,
 			nData:  1000,
@@ -133,7 +133,7 @@ func leastSquaresList() []*LeastSquares {
 }
 
 func randBatchersList() []*RandomBatch {
-	src := rand.NewSource(2)
+	src := rand.NewSource(3)
 	return []*RandomBatch{
 		{
 			Size:        5,
@@ -172,31 +172,89 @@ func init() {
 	}
 }
 
-func TestAnneal(t *testing.T) {
+func TestSteppers(t *testing.T) {
 	// Test each stepper with the problems and batchers.
-	for cas, stepper := range []Stepper{
-		//&Adadelta{}, // no
-		&Adagrad{}, // no
-		// &Adam{}, // does'nt crash, but wrong
-		//&Anneal{}, // yes
-		//&Momentum{}, // fails one of them,
-		//&Nesterov{}, // no
-		//&RMSProp{}, // no
+	for cas, step := range []struct {
+		Name     string
+		Stepper  Stepper
+		Settings *Settings
+		AnsTol   float64
+	}{
+		{
+			Name:    "Adadelta",
+			Stepper: &Adadelta{},
+			Settings: &Settings{
+				Iterations:    100000,
+				StepTolerance: -1, // The steps get really small but crawl to the minimum.
+			},
+			AnsTol: 3e-3,
+		},
+		{
+			Name:    "Adagrad",
+			Stepper: &Adagrad{},
+			Settings: &Settings{
+				Iterations:    1000000,
+				StepTolerance: -1, // Adagrad doesn't converge to a specific step size but oscilates around the true value.
+			},
+			AnsTol: 2e-2,
+		},
+		{
+			Name:    "Adam",
+			Stepper: &Adam{},
+			Settings: &Settings{
+				StepTolerance: 1e-6,
+			},
+			AnsTol: 3e-3,
+		},
+		{
+			Name:    "Anneal",
+			Stepper: &Anneal{},
+			Settings: &Settings{
+				StepTolerance: 1e-8,
+			},
+			AnsTol: 1e-3,
+		},
+		{
+			Name:    "Momentum",
+			Stepper: &Momentum{},
+			Settings: &Settings{
+				StepTolerance: 1e-8,
+			},
+			AnsTol: 3e-3,
+		},
+		{
+			Name:    "Nesterov",
+			Stepper: &Nesterov{},
+			Settings: &Settings{
+				StepTolerance: 1e-6,
+			},
+			AnsTol: 5e-3,
+		},
+		{
+			Name:    "RMSProp",
+			Stepper: &RMSProp{},
+			Settings: &Settings{
+				Iterations:    100000,
+				StepTolerance: 1e-6,
+			},
+			AnsTol: 5e-3,
+		},
 	} {
 		for p, prob := range sgdProbs {
 			for b, batcher := range batchers {
-				optimal := prob.Optimal()
-				problem := prob.Problem()
-
-				testStr := fmt.Sprintf("cas =%v, p = %v, b = %v", cas, p, b)
-				// TODO(btracey): add in a variety of steppers.
-				result, err := SGD(problem, batcher, stepper, nil)
-				if err != nil {
-					t.Errorf("unexepected error: "+testStr+":", err)
-				}
-				if !floats.EqualApprox(result.X, optimal, 1e-2) {
-					t.Errorf("Optimal mismatch:"+testStr+": got %v, want %v", result.X, optimal)
-				}
+				t.Run(fmt.Sprintf("Name: %v, cas =%v, p = %v, b = %v", step.Name, cas, p, b), func(t *testing.T) {
+					optimal := prob.Optimal()
+					problem := prob.Problem()
+					settings := step.Settings
+					stepper := step.Stepper
+					result, err := SGD(problem, batcher, stepper, settings)
+					if err != nil {
+						t.Errorf("unexepected error: %v", err)
+					}
+					if !floats.EqualApprox(result.X, optimal, step.AnsTol) {
+						t.Errorf("Optimal mismatch:: got %v, want %v", result.X, optimal)
+					}
+				})
 			}
 		}
 	}

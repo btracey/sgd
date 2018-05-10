@@ -4,7 +4,6 @@
 package sgd
 
 import (
-	"fmt"
 	"math"
 
 	"gonum.org/v1/gonum/floats"
@@ -17,8 +16,8 @@ type Settings struct {
 	// If Iterations is 0, then an unlimited iteration count is used by default.
 	Iterations int
 
-	// StepTolerance sets the stopping tolerance on the step size. That is, if
-	// the norm of the step
+	// StepTolerance sets the stopping tolerance on the step size. If StepTolerance
+	// is zero then it is defaulted to a value of 1e-8.
 	StepTolerance float64
 }
 
@@ -79,7 +78,7 @@ func SGD(problem Problem, batcher Batcher, stepper Stepper, settings *Settings) 
 		}
 		floats.Scale(1/float64(nData), avgGrad)
 		stepper.Step(step, avgGrad)
-		fmt.Println(step)
+		//fmt.Println(step)
 
 		stepNorm := floats.Norm(step, 2)
 		//fmt.Println(parameters)
@@ -93,7 +92,7 @@ func SGD(problem Problem, batcher Batcher, stepper Stepper, settings *Settings) 
 			break
 		}
 		floats.Add(parameters, step)
-		fmt.Println("parameters = ", parameters)
+		//fmt.Println("parameters = ", parameters)
 	}
 	return &Result{
 		X:      parameters,
